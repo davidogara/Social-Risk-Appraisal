@@ -5,8 +5,8 @@ This repository contains several sub-directories:
 1. model: the Netlogo model to generate the results
 2. analysis: analytical scripts (in `R`) to make the figures
 3. data: data from the experiments (note that larger data files are zipped).
+4. figures: folder to save figures.
 
-Make sure to create a `figures` directory to save any figures.
 
 
 
