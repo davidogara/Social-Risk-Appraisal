@@ -18,16 +18,25 @@ colorlinks: true
 ## Introduction
 
 ```{r setup, include=FALSE}
+s = proc.time()[3]
 dev = 'cairo_pdf'
 PERCENT_SIGN = '%'
 knitr::opts_chunk$set(echo = F, warning = F, message = F, dev = dev, cache = T, cache.lazy = F)
 library(data.table)
 library(tidyverse)
 library(stringr)
+library(survival)
+library(boot)
+library(estimatr)
+source('pests.R')
 ```
 
 ```{r utility_functions}
 
+boot_mean = function(x,y){
+  out = sample(x,size=length(x),replace = T) - sample(y,size=length(y),replace = T)
+  out
+}
 
 color_map = c(
   "Contagion"             = "#BC3C29FF",
@@ -74,7 +83,10 @@ epi_plot = function(dat,top.n=NULL,one_disease_rate = F,txt_size = 10,...)
 n_agents = dat[,unique(num_turtles)]
 dat[,count_infected:=n_agents*percent_infected/100]
 
-
+# under social fear amplification:
+## Ha: cumulative disease spread is lower
+# under social fear extinction
+## Ha: cumulative disease spread is higher
 sra_hypothesis <- c("Gamma"="g","Anchor"="l")[dat[,unique(type_of_fear_distribution)]]
 
 if (one_disease_rate){
@@ -136,6 +148,7 @@ labels = dat |>
             epidemic_end  = paste0("Avg Duration: ",round(mean(epidemic_end),2)," ± ",round(sd(epidemic_end),2)),
             day_max = paste0(day_max))
 
+test_result_stats = T
 
 test_results <- NULL
 disease_rate_and_release_mechanisms <- unique(dat[,c("Disease_Infection_Rate","Release_Mechanism")])
@@ -144,46 +157,49 @@ for (row in 1:nrow(disease_rate_and_release_mechanisms)){
   release_mechanism <- disease_rate_and_release_mechanisms[row,Release_Mechanism] 
   d <- dat %>% filter(Disease_Infection_Rate==disease_rate & Release_Mechanism==release_mechanism & step==max(step))
   
-  variable <- "percent_infected"
-
-  form = as.formula(paste0(variable,"~","experiment"))
-  result = NULL
+  for (variable in c("percent_infected","peak_infected","epidemic_end","day_max")){
+  
+    form = as.formula(paste0(variable,"~","experiment"))
+    result = NULL
     if ("Fear Spread via:\nComplex Contagion" %in% d[,unique(experiment)]){
       test_CC <- t.test(form,
                       equal.var=F,
                       alternative = "l",
                       data = d %>% 
                       filter(experiment!="Fear Spread via:\nSocial Risk Appraisal") %>%
-                      mutate(experiment = factor(experiment,
-                                                 levels = c("Fear Spread via:\nContagion",
-                                                            "Fear Spread via:\nComplex Contagion"))))$p.value
+                      mutate(experiment = factor(experiment,levels = c("Fear Spread via:\nContagion","Fear Spread via:\nComplex Contagion"))))$p.value
+      
       result = bind_rows(result,
                          data.frame(list(
                           "experiment" = c("Fear Spread via:\nComplex Contagion"),
                           "pval"       = c(test_CC))
-                          ))
-    }
+                          )
+            )
+      }
     if ("Fear Spread via:\nSocial Risk Appraisal" %in% d[,unique(experiment)]){ 
       test_SRA <- t.test(form,
                      equal.var=F,
                      alternative = sra_hypothesis,
-                     data = d %>% 
+                      data = d %>% 
                         filter(experiment!="Fear Spread via:\nComplex Contagion") %>%
-                        mutate(experiment = factor(experiment,
-                                                   levels = c("Fear Spread via:\nContagion",
-                                                              "Fear Spread via:\nSocial Risk Appraisal"))))$p.value
+                        mutate(experiment = factor(experiment,levels = c("Fear Spread via:\nContagion","Fear Spread via:\nSocial Risk Appraisal"))))$p.value
+    
       result = bind_rows(result,
                          data.frame(list(
                           "experiment" = c("Fear Spread via:\nSocial Risk Appraisal"),
                           "pval"       = c(test_SRA))
-                          ))
-    }
+                          )
+            )
+      }
     result = result %>%
               mutate(Disease_Infection_Rate = disease_rate,
                       variable = variable,
                      Release_Mechanism = release_mechanism)
     
     test_results = bind_rows(test_results,result)
+  }
+  
+  
 }
 
 
@@ -197,20 +213,75 @@ test_results_wide <- test_results %>%
   dplyr::select(-pval) %>%
   pivot_wider(names_from = "variable", values_from = "stars",names_prefix = "stars_")
 
+# Cox PH model for experiments
+time_to_event <- dat[step>2,
+                     .(epidemic_end = if_else(min(count_disease_I)==0,step[which.min(count_disease_I)],149)), 
+                     by=c("experiment","run_number","Disease_Infection_Rate","Release_Mechanism")] %>%
+                .[,status:=1*(epidemic_end<149)]
+time_to_event[,experiment:=relevel(factor(experiment),ref="Fear Spread via:\nContagion")]
+
+
+  cox_results <- NULL
+  disease_rate_and_release_mechanisms <- unique(time_to_event[,c("Disease_Infection_Rate","Release_Mechanism")])
+  for(row in 1:nrow(disease_rate_and_release_mechanisms)){
+    disease_infection_rate = disease_rate_and_release_mechanisms[row,Disease_Infection_Rate]
+    release_mechanism = disease_rate_and_release_mechanisms[row,Release_Mechanism]
+    
+  survival_model <- coxph(Surv(epidemic_end, status) ~ experiment,
+                          robust=T,
+                          data = time_to_event %>% 
+                            filter(Disease_Infection_Rate==disease_infection_rate & Release_Mechanism == release_mechanism)
+                    )
+  model_summary <- summary(survival_model)
+  coefficient_estimates <- data.table(
+    cox_PH = coef(model_summary)[,"exp(coef)"],
+    pval   = coef(model_summary)[,"Pr(>|z|)"],
+    conf_int = model_summary$conf.int %>% 
+                            as_tibble() %>% 
+                            mutate(conf_int = paste0("(",round(`lower .95`,2),", ",round(`upper .95`,2),")")) %>%
+                            pull(conf_int),
+    experiment = stringr::str_remove(rownames(coef(model_summary)),"experiment")
+    ) %>%
+    mutate(stars = case_when(pval <1e-3 ~ "***",
+                             pval <1e-2 ~ "**",
+                             pval <0.05 ~ "*",
+                             pval <0.1 ~ ".",
+                             pval <1 ~ " ")) %>%
+    mutate(Disease_Infection_Rate=disease_infection_rate,
+           Release_Mechanism = release_mechanism) %>%
+    mutate(cox_label = paste0("Cox PH Coef: ",round(cox_PH,2),stars," ",conf_int)) %>%
+    dplyr::select(experiment,Disease_Infection_Rate,Release_Mechanism,cox_label)
+  
+    cox_results <- bind_rows(cox_results,coefficient_estimates)
+  #print(coefficient_estimates)
+  prop_hazards_assumption <- cox.zph(survival_model)
+  #cat('\n',prop_hazards_assumption$table[,"p"],'\n')
+  }
+
 
 
 # Add to CI labels 
 
 labels <- labels %>% 
   left_join(test_results_wide, by = c("experiment","Disease_Infection_Rate","Release_Mechanism")) %>%
-  mutate(stars_percent_infected = if_else(is.na(stars_percent_infected),"",stars_percent_infected)) %>%
-  mutate(CI            = paste0(CI,stars_percent_infected)) %>%
+  mutate(stars_percent_infected = if_else(is.na(stars_percent_infected),"",stars_percent_infected),
+         stars_peak_infected = if_else(is.na(stars_peak_infected),"",stars_peak_infected),
+         stars_epidemic_end = if_else(is.na(stars_epidemic_end),"",stars_epidemic_end),
+         stars_day_max     = if_else(is.na(stars_day_max),"",stars_day_max)) %>%
+  mutate(CI            = paste0(CI,stars_percent_infected),
+         peak_infected = paste0(peak_infected,stars_peak_infected),
+         epidemic_end  = paste0(epidemic_end,stars_epidemic_end),
+         day_max       =paste0(day_max,stars_day_max)) %>%
+  # mutate(CI = paste(CI,peak_infected,epidemic_end,day_max,sep='\n')) %>%
   dplyr::select(experiment,Disease_Infection_Rate,CI) %>%
-  unique()
+  unique() %>%
+  left_join(cox_results,by = c("experiment","Disease_Infection_Rate","Release_Mechanism")) %>%
+  mutate(cox_label = if_else(is.na(cox_label),"",cox_label)) %>%
+  mutate(CI = paste0(CI,'\n',cox_label))
 
 label_peak_infect =  infections_at_peak %>% 
                      filter(run_number %in% cumulative_rns) %>%
-                     mutate(peak_infections = paste0('Peak infections: ',round(100*count_disease_I/n_agents,2),PERCENT_SIGN))
+                     mutate(peak_infections = paste0('Peak infections:',round(100*count_disease_I/n_agents,2),PERCENT_SIGN))
 
 
 label_epidemic_ends = infections_epi_end %>%
@@ -239,20 +310,15 @@ p = dat  |>
 # add labels
 y.lim = ggplot_build(p)$layout$panel_scales_y[[1]]$range$range[2]
 
-lbl_CI = 0.85
-lbl_peak_infected_arrow = 0.52
-lbl_peak_infected_text = 0.56
-lbl_epi_end_arrow = 0.40
-lbl_epi_end_text = 0.46
 p = p + geom_text(data = labels,
-            mapping = aes(label=CI,alpha=1.0),x=100,y=lbl_CI*y.lim,
+            mapping = aes(label=CI,alpha=1.0),x=100,y=0.85*y.lim,
             group=-1,color='black',size=txt_size/.pt,show.legend = F) +
   # arrow and label for peak infected
   geom_segment(
     data = label_peak_infect,
     mapping = aes(xend=step,yend=count_disease_I,y=NULL,group=NULL),
     alpha = 1.0,
-    x = 120, y = (lbl_peak_infected_arrow*y.lim),
+    x = 120, y = (0.34*y.lim),
     lineend = "round", # See available arrow types in example above
     linejoin = "round",
     size = 1, 
@@ -260,7 +326,7 @@ p = p + geom_text(data = labels,
     colour = "black" # Also accepts "red", "blue' etc
   ) +
   geom_label(data = label_peak_infect,
-            mapping = aes(label=peak_infections,alpha=1.0),x=115,y=lbl_peak_infected_text*y.lim,
+            mapping = aes(label=peak_infections,alpha=1.0),x=115,y=0.36*y.lim,
             label.size = NA,
             group=-1,color='black',size=txt_size/.pt,show.legend = F) +
   
@@ -269,7 +335,7 @@ p = p + geom_text(data = labels,
     data = label_epidemic_ends,
     mapping = aes(xend=step,yend=count_disease_I,y=NULL,group=NULL),
     alpha = 1.0,
-    x = 120, y = (lbl_epi_end_arrow*y.lim),
+    x = 120, y = (0.20*y.lim),
     lineend = "round", # See available arrow types in example above
     linejoin = "round",
     size = 1, 
@@ -277,7 +343,7 @@ p = p + geom_text(data = labels,
     colour = "black" # Also accepts "red", "blue' etc
   ) +
   geom_label(data = label_epidemic_ends,
-            mapping = aes(label=epi_end_label,alpha=1.0),x=115,y=lbl_epi_end_text*y.lim,
+            mapping = aes(label=epi_end_label,alpha=1.0),x=115,y=0.22*y.lim,
             label.size = NA,
             group=-1,color='black',size=txt_size/.pt,show.legend = F)
 
@@ -309,7 +375,7 @@ dat.spatial = rbindlist(
   )
 )
 p.spatial = dat.spatial %>% 
-  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 9) + 
+  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 6) + 
   labs(title="Spatially Clustered") + 
   theme(plot.title = element_text(hjust = 0.5,size = 18))
 p.spatial
@@ -430,7 +496,6 @@ dat = fread('../data/core/experiment-05-fear-increasing-small-world-vary-cluster
               skip=6) %>%
   prep_data() %>%
   filter(step == max(step)) %>%
-  mutate(node_swap = percent_nodes_swapped) %>%
   mutate(percent_nodes_swapped = paste0("Node Swapping: ",round(100*percent_nodes_swapped,0),PERCENT_SIGN)) %>%
   mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls)) %>%
   mutate(experiment = relevel(factor(experiment),ref="Fear Spread via:\nContagion"))
@@ -452,12 +517,17 @@ for (ns in dat[,unique(percent_nodes_swapped)]){
     rename(pval=`Pr(>|t|)`) %>%
     star_labeler()
   
-  eq1 = paste0('beta[rewire] : "',eval(coefs[variable=='percent_links_rewired',label]),'"')
-  eq2 = paste0('beta[SRA] : "',eval(coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]),'"')
-  
-  data_labels = bind_rows(data_labels,tibble(percent_nodes_swapped=ns,label1=eq1,label2=eq2,experiment="The"))
+  eq_label = paste0("$\\beta_{rewire}=",
+                    coefs[variable=='percent_links_rewired',label],
+                    '\\n',
+                    "\\beta_{SRA}=",
+                         coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]
+                         )
+  eqn = paste0("β1 = ",coefs[variable=='percent_links_rewired',label],'\n',
+               "β2 = ",coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label])
+  data_labels = bind_rows(data_labels,tibble(percent_nodes_swapped=ns,label=eqn,experiment="The"))
 }
-data_labels <- data_labels %>% mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
+
 p.clustered_fear_increasing = dat %>%
   ggplot() +
   aes(x=percent_links_rewired,y=percent_infected,col=experiment) +
@@ -465,12 +535,8 @@ p.clustered_fear_increasing = dat %>%
   stat_summary(geom = "line", fun = mean) +
   stat_summary(geom="point",fun = mean,size=0.75) +
   scale_color_manual(values=color_map,name=NULL) +
-  geom_text(data = data_labels,mapping = aes(label=label1),
-            parse = T,
-            x=0.165,y=20,alpha=1.0,color='black') +
-  geom_text(data = data_labels,mapping = aes(label=label2),
-            parse = T,
-            x=0.1925,y=20,alpha=1.0,color='black') +
+  geom_text(data = data_labels,mapping = aes(label=label),
+            x=0.19,y=20,alpha=1.0,color='black',size=2) +
   plot_theme(base_size = 14) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
@@ -478,20 +544,13 @@ p.clustered_fear_increasing = dat %>%
   labs(x="Percent Links Rewired (Decreasing Clustering)",
        y="Cumulative Infections")
 
-
-# also do linear regression using node swapping as a factor:
-
-reg <- lm(percent_infected ~ percent_links_rewired + experiment + node_swap, data = dat)
-summary(reg)
 p.clustered_fear_increasing
 ```
 ## Fear Extinction
 ```{r}
-
 dat = fread('../data/core/experiment-06-fear-decreasing-small-world-vary-clustering-and-swapping-table.csv',skip=6) %>%
   prep_data() %>%
   filter(step == max(step)) %>%
-  mutate(node_swap = percent_nodes_swapped) %>%
   mutate(percent_nodes_swapped = paste0("Node Swapping: ",round(100*percent_nodes_swapped,0),PERCENT_SIGN)) %>%
   mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
 data_labels = NULL
@@ -503,38 +562,31 @@ for (ns in dat[,unique(percent_nodes_swapped)]){
     rename(pval=`Pr(>|t|)`) %>%
     star_labeler()
   
-  eq_label = paste0("$\\beta_{rewire}$=",
+  eq_label = paste0("$\\beta_{rewire}=",
                     coefs[variable=='percent_links_rewired',label],
-                    '$\\n',
-                    "$\\beta_{SRA}$=",
+                    '\\n',
+                    "\\beta_{SRA}=",
                          coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]
                          )
-  eq1 = paste0('beta[rewire] : "',eval(coefs[variable=='percent_links_rewired',label]),'"')
-  eq2 = paste0('beta[SRA] : "',eval(coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]),'"')
-  
-  data_labels = bind_rows(data_labels,tibble(percent_nodes_swapped=ns,label1=eq1,label2=eq2,experiment="The"))
+  eqn = paste0("β1 = ",coefs[variable=='percent_links_rewired',label],'\n',
+               "β2 = ",coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label])
+  data_labels = bind_rows(data_labels,tibble(percent_nodes_swapped=ns,label=eqn,experiment="The"))
 }
-data_labels <- data_labels %>% mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
 p.clustered_fear_decreasing = dat %>%
   ggplot() +
   aes(x=percent_links_rewired,y=percent_infected,col=experiment) +
   geom_point(alpha=0.1,size=0.01) +
   stat_summary(geom = "line", fun = mean) +
   stat_summary(geom="point",fun = mean,size=0.75) +
-  geom_text(data = data_labels,mapping = aes(label=label1),
-            parse = T,
-            x=0.165,y=70,alpha=1.0,color='black') +
-  geom_text(data = data_labels,mapping = aes(label=label2),
-            parse = T,
-            x=0.1925,y=70,alpha=1.0,color='black') +
+  geom_text(data = data_labels,mapping = aes(label=label),
+            x=0.19,y=70,alpha=1.0,color='black',size=2) +
   scale_color_manual(values=color_map,name=NULL) +
   plot_theme(base_size = 14) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
   labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections")
-reg <- lm(percent_infected ~ percent_links_rewired + experiment + node_swap, data = dat)
-summary(reg)
+
 p.clustered_fear_decreasing
 ```
 
@@ -585,7 +637,7 @@ get_network = function(net_file,lastrow,skipper,nrows)
   
 
 el_file = fread(net_file,skip=skipper,nrows = lastrow-skipper-1) %>%
-  dplyr::select(end1,end2) %>%
+  select(end1,end2) %>%
   mutate(end1 = str_extract(end1,pattern = '\\d+'),
          end2 = str_extract(end2,pattern = '\\d+')
          ) %>%
@@ -593,7 +645,7 @@ el_file = fread(net_file,skip=skipper,nrows = lastrow-skipper-1) %>%
          to=end2)
 
 coordinates = fread(net_file,skip=12,nrows=nrows) %>% 
-  dplyr::select(xcor,ycor,disease_state=`disease-state`,
+  select(xcor,ycor,disease_state=`disease-state`,
          initial_fear_score=`initial-fear-score`,
          fear_state=`fear-state`,
          hiding=`hiding?`,
@@ -714,32 +766,32 @@ fta_tick_by_tick = extract_agent_data(
 
 # now get the fear scores of the *red* agents on the day they *would* have been infected under SRA
 agents_infected_under_contagion_but_not_SRA = contagion_tick_by_tick[who %in% data_combined[contagion_vs_SRA=="R-S",name],][disease_state=="I",][,head(.SD,1),by=who] %>%
-  dplyr::select(who,fear_score,ticks=tick_infected) %>%
+  select(who,fear_score,ticks=tick_infected) %>%
   mutate(ticks = ticks + 1)
 
 agents_infected_under_contagion_but_not_SRA_on_day_of_contagion_infection = agents_infected_under_contagion_but_not_SRA %>%
   merge.data.table(y = fta_tick_by_tick, by = c("who","ticks")) %>%
   mutate(fear_score_label = round(fear_score.x - fear_score.y,3)) %>%
-  dplyr::select(who,fear_score_label)
+  select(who,fear_score_label)
 
 # and look up what they were doing on that same tick in SRA
 
 agents_infected_under_SRA_but_not_contagion = fta_tick_by_tick[who %in% data_combined[contagion_vs_SRA=="S-R",name],][disease_state=="I",][,head(.SD,1),by=who] %>%
 merge.data.table(y = data_combined[contagion_vs_SRA=="S-R",.(who=name,initial_fear_score=initial_fear_score.x)],by="who") %>%
   mutate(fear_score_label = round(fear_score - initial_fear_score,3)) %>%
-  dplyr::select(who,fear_score_label)
+  select(who,fear_score_label)
 
 
 d1 = data_combined %>%
   filter(contagion_vs_SRA!="S-R"  & contagion_vs_SRA != "R-S") %>%
-  dplyr::select(who=name,xcor,ycor,compare_color,contagion_vs_SRA,initial_fear_score=initial_fear_score.x) %>%
+  select(who=name,xcor,ycor,compare_color,contagion_vs_SRA,initial_fear_score=initial_fear_score.x) %>%
   mutate(fear_score_label = "")
 d2 = data_combined %>% 
-  dplyr::select(who=name,xcor,ycor,compare_color,contagion_vs_SRA,initial_fear_score=initial_fear_score.x) %>%
+  select(who=name,xcor,ycor,compare_color,contagion_vs_SRA,initial_fear_score=initial_fear_score.x) %>%
   merge.data.table(y = agents_infected_under_contagion_but_not_SRA_on_day_of_contagion_infection, by = "who")
 
 d3 = data_combined %>% 
-  dplyr::select(who=name,xcor,ycor,compare_color,contagion_vs_SRA,initial_fear_score=initial_fear_score.x) %>%
+  select(who=name,xcor,ycor,compare_color,contagion_vs_SRA,initial_fear_score=initial_fear_score.x) %>%
   merge.data.table(y = agents_infected_under_SRA_but_not_contagion, by = "who")
 
 data_combined_v2 = rbindlist(l = list(d1,d2,d3))  %>%
@@ -777,7 +829,7 @@ plot_table[,compare_color:=factor(compare_color,levels = c("#0072B5FF","gray","#
 
 plot_table %>%
   mutate(`Avg Initial Fear Belief` = paste0(round(`Avg Initial Fear Score`,3), " (",count,")")) %>%
-  dplyr::select(Contagion,SRA,`Avg Initial Fear Belief`,Color=compare_color) %>%
+  select(Contagion,SRA,`Avg Initial Fear Belief`,Color=compare_color) %>%
   fwrite(file = '../figures/core/75-Agents-Table.csv')
 ```
 
@@ -872,7 +924,7 @@ small_world_cc = fread('../data/core/experiment-09-fear-decreasing-small-world-l
               fear_threshold == 2 ~ "SRA + Complex Contagion"),
       levels = c("SRA + Simple Contagion","SRA + Complex Contagion"))
     ) %>%
-  dplyr::select(step,experiment,count_disease_I,count_hiding,run_number) %>%
+  select(step,experiment,count_disease_I,count_hiding,run_number) %>%
   pivot_longer(cols = c("count_disease_I","count_hiding")) %>%
   mutate(name = case_when(
     name=="count_disease_I" ~ "Infected",
@@ -892,7 +944,7 @@ small_world_cc %>%
   aes(x=step,y=value,col=name,group=run_number) +
   geom_line(show.legend = F) +
   facet_grid(experiment ~ name) +
-  scale_color_manual(values = c("Infected"="#D95F02","Hiding"="#1B9E77"),name=NULL) +
+  scale_color_manual(values = c("Infected"="red","Hiding"="darkgreen"),name=NULL) +
   plot_theme(base_size = 18) +
   geom_label(data = small_world_cc.labels, mapping = aes(label=label),
              label.size = NA, col='black',size=5) +
@@ -942,7 +994,7 @@ ggsave('../figures/core/Supp/Supplement-Compare-Release-Mechanisms.pdf', height 
 data = fread(file = '../data/core/calibrate-prob-release-damping-table.csv', skip = 6) %>%
   prep_data() %>%
   mutate(mean_avg_hide_time = as.numeric(mean_avg_hide_time)) %>%
-  dplyr::select(run_number,mean_avg_hide_time,prob_release_damping) 
+  select(run_number,mean_avg_hide_time,prob_release_damping) 
 
 data.mean = data %>% 
   group_by(prob_release_damping) %>%
