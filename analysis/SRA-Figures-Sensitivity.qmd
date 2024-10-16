@@ -26,187 +26,7 @@ library(tidyverse)
 library(stringr)
 ```
 
-```{r utility_functions}
-color_map = c(
-  "Contagion"             = "#BC3C29FF",
-  "Social Risk Appraisal" = "#0072B5FF",
-  "Complex Contagion"     = "#E18727FF"
-)
-names(color_map) = paste0("Fear Spread via:\n",names(color_map))
-plot_theme = function(base_size=10){
-  theme_classic(base_size = base_size) +
-  theme(axis.text.y.right = element_blank(),
-        axis.line.y.right = element_blank(),
-        axis.ticks.y.right = element_blank(),
-        legend.position = "top",
-        strip.background = element_blank(),
-        axis.title = element_text(color = 'black'),
-        axis.text = element_text(color = 'black')
-        )
-}
-
-make_variable_names = function(data_names){
-  data_names |>
-    stringr::str_replace_all(pattern = "[.]", replacement = "_") |>
-    stringr::str_replace_all(pattern = "-"  , replacement = "_") |>
-    stringr::str_replace_all(pattern = "[?]", replacement = "") |>
-    stringr::str_replace_all(pattern = "\\[", replacement = "") |>
-    stringr::str_replace_all(pattern = "\\]", replacement = "") |>
-    stringr::str_replace_all(pattern = " "  , replacement = "_")
-}
-
-
-# data cleaning
-prep_data = function(dat)
-{
-setnames(dat,new = make_variable_names(names(dat)))
-setorder(dat,"step","run_number")
-dat[,experiment:=paste0("Fear Spread via:\n",fcase(Fear_Mechanism=="Complex Contagion-Gamma","Contagion",
-                                                  Fear_Mechanism=="FTA","Social Risk Appraisal"))]
-dat
-}
-
-# core analysis plot
-epi_plot = function(dat,top.n=NULL,one_disease_rate = F,txt_size = 10,...)
-{
-n_agents = dat[,unique(num_turtles)]
-dat[,count_infected:=n_agents*percent_infected/100]
-
-
-if (one_disease_rate){
-  disease_rate = dat[,unique(Disease_Infection_Rate)] %>% median()
-  dat = dat[Disease_Infection_Rate==disease_rate]
-}
-
-group_cols = c("experiment","Disease_Infection_Rate","Fear_Infection_Rate")
-
-if ("Release_Mechanism" %in% names(dat)){
-  group_cols = c(group_cols,"Release_Mechanism")
-}
-
-# select run leading to median levels of infection
-cols = c(group_cols,"percent_infected","run_number")
-setorder(dat,"percent_infected")
-last_step = dat[step==max(step),]
-setorderv(last_step,c(group_cols,"percent_infected"))
-cumulative_rns = last_step[,
-                 .(percent_infected = head(percent_infected,25) %>% tail(1) # with 50 runs, select top 25 and then 25th
-                   ),
-                   by=c(group_cols,"step")] %>%
-  merge.data.table(dat,
-                   by = c(group_cols,"step","percent_infected"),
-                   all.x = F,
-                   all.y = F) %>%
-  setorder("run_number") %>% # in the event of ties, pick lowest run number
-  unique(by=group_cols) %>%
-  .[,run_number]
-
-
-## calculate proportion of infections happening in second half of model run
-
-dat = merge.data.table(dat,
-                       y = dat[step>2,
-                                .(day_max      = step[which.max(count_disease_I)],
-                                  epidemic_end = if_else(min(count_disease_I)==0,step[which.min(count_disease_I)],149)), 
-                               by=run_number],
-                       by = "run_number")
-
-
-infections_at_peak = dat |> filter(step==day_max) %>%
-  select(run_number,count_infected,count_disease_I,Disease_Infection_Rate,experiment,step,Release_Mechanism)
-infections_at_end = dat |> filter(step==max(step)) %>% 
-  select(run_number,count_infected,count_disease_I,Disease_Infection_Rate,experiment,step,Release_Mechanism)
-
-infections_epi_end = dat |> filter(step==epidemic_end) %>%
-  select(run_number,count_infected,count_disease_I,Disease_Infection_Rate,experiment,step,Release_Mechanism)
-
-
-
-labels = dat |> 
-  filter(step==max(step)) |> 
-  group_by(across(all_of(group_cols))) |> 
-  summarise(CI = paste0("Avg Total Infected:\n",round(mean(percent_infected),2),PERCENT_SIGN," ± ",round(sd(percent_infected),2)))
-
-label_peak_infect =  infections_at_peak %>% 
-                     filter(run_number %in% cumulative_rns) %>%
-                     mutate(peak_infections = paste0('Peak infections: ',round(100*count_disease_I/n_agents,2),PERCENT_SIGN))
-
-
-label_epidemic_ends = infections_epi_end %>%
-                      filter(run_number %in% cumulative_rns) %>%
-                      mutate(epi_end_label = paste0('Epidemic ends at tick: ',step))
-
-label_arrows = merge.data.table(label_peak_infect, label_epidemic_ends, by = "run_number", suffixes = c("_peak","_end")) %>%
-               mutate(label = paste0(peak_infections,'\n',epi_end_label))
-
-p = dat  |> 
-  mutate(rn_alpha = if_else(run_number %in% cumulative_rns,1.0,0.1)) %>%
-  ggplot() +
-  # plot
-  aes(x=step,y=count_disease_I,color=experiment,group=run_number,alpha=rn_alpha) +
-  geom_line(show.legend = F) + # individual runs
-  facet_grid(Disease_Infection_Rate~experiment) +
-  # color
-  scale_color_manual(values=color_map)+
-  # format
-  labs(y="Infected Agents",x="Tick") +
-  plot_theme(...)
-
-
-
-# add labels
-y.lim = ggplot_build(p)$layout$panel_scales_y[[1]]$range$range[2]
-
-p = p + geom_text(data = labels,
-            mapping = aes(label=CI,alpha=1.0),x=120,y=0.85*y.lim,
-            group=-1,color='black',size=txt_size/.pt,show.legend = F) +
-  # arrow and label for peak infected
-  geom_segment(
-    data = label_peak_infect,
-    mapping = aes(xend=step,yend=count_disease_I,y=NULL,group=NULL),
-    alpha = 1.0,
-    x = 120, y = (0.34*y.lim),
-    lineend = "round", # See available arrow types in example above
-    linejoin = "round",
-    size = 1, 
-    arrow = arrow(length = unit(0.1, "inches"),type = "closed"),
-    colour = "black" # Also accepts "red", "blue' etc
-  ) +
-  geom_label(data = label_peak_infect,
-            mapping = aes(label=peak_infections,alpha=1.0),x=115,y=0.36*y.lim,
-            label.size = NA,
-            group=-1,color='black',size=txt_size/.pt,show.legend = F) +
-  
-  # arrow and label for epidemic end
-  geom_segment(
-    data = label_epidemic_ends,
-    mapping = aes(xend=step,yend=count_disease_I,y=NULL,group=NULL),
-    alpha = 1.0,
-    x = 120, y = (0.20*y.lim),
-    lineend = "round", # See available arrow types in example above
-    linejoin = "round",
-    size = 1, 
-    arrow = arrow(length = unit(0.1, "inches"),type = "closed"),
-    colour = "black" # Also accepts "red", "blue' etc
-  ) +
-  geom_label(data = label_epidemic_ends,
-            mapping = aes(label=epi_end_label,alpha=1.0),x=115,y=0.22*y.lim,
-            label.size = NA,
-            group=-1,color='black',size=txt_size/.pt,show.legend = F)
-
-if(one_disease_rate==F){
-  p = p + 
-    scale_y_continuous(sec.axis = sec_axis(~.*1.0,name="Disease Infection Rate"))
-}
-if (one_disease_rate){
-  p = p + 
-    theme(strip.background = element_blank(),
-          strip.text.y = element_blank())
-}
-p
-
-}
-```
+* This file uses the same `epi_plot` function from the main analysis
 
 
 # Socially Driven Fear Amplifications
@@ -307,9 +127,34 @@ dat = fread('../data/sensitivity/experiment-05-fear-increasing-small-world-vary-
               skip=6) %>%
   prep_data() %>%
   filter(step == max(step)) %>%
+  mutate(node_swap = percent_nodes_swapped) %>%
   mutate(percent_nodes_swapped = paste0("Node Swapping: ",round(100*percent_nodes_swapped,0),PERCENT_SIGN)) %>%
-  mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
+  mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls)) %>%
+  mutate(experiment = relevel(factor(experiment),ref="Fear Spread via:\nContagion"))
 
+star_labeler = function(x){
+  x %>% mutate(stars = case_when(pval <1e-3 ~ "***",
+                           pval <1e-2 ~ "**",
+                           pval <0.05 ~ "*",
+                           pval <0.1 ~ ".",
+                           pval <1 ~ " ")) %>%
+      mutate(label = paste0(round(Estimate,2),stars))
+}
+data_labels = NULL
+for (ns in dat[,unique(percent_nodes_swapped)]){
+  m = lm(percent_infected ~ percent_links_rewired + experiment, data = dat[percent_nodes_swapped==ns,])
+  m_summary = summary(m)
+  coefs = m_summary$coefficients[,c("Estimate","Pr(>|t|)")] %>% 
+    data.table(keep.rownames = "variable") %>% 
+    rename(pval=`Pr(>|t|)`) %>%
+    star_labeler()
+  
+  eq1 = paste0('beta[rewire] : "',eval(coefs[variable=='percent_links_rewired',label]),'"')
+  eq2 = paste0('beta[SRA] : "',eval(coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]),'"')
+  
+  data_labels = bind_rows(data_labels,tibble(percent_nodes_swapped=ns,label1=eq1,label2=eq2,experiment="The"))
+}
+data_labels <- data_labels %>% mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
 p.clustered_fear_increasing = dat %>%
   ggplot() +
   aes(x=percent_links_rewired,y=percent_infected,col=experiment) +
@@ -317,12 +162,24 @@ p.clustered_fear_increasing = dat %>%
   stat_summary(geom = "line", fun = mean) +
   stat_summary(geom="point",fun = mean,size=0.75) +
   scale_color_manual(values=color_map,name=NULL) +
+  geom_text(data = data_labels,mapping = aes(label=label1),
+            parse = T,
+            x=0.165,y=20,alpha=1.0,color='black') +
+  geom_text(data = data_labels,mapping = aes(label=label2),
+            parse = T,
+            x=0.1925,y=20,alpha=1.0,color='black') +
   plot_theme(base_size = 14) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
-  labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections")
+  labs(x="Percent Links Rewired (Decreasing Clustering)",
+       y="Cumulative Infections")
 
+
+# also do linear regression using node swapping as a factor:
+
+reg <- lm(percent_infected ~ percent_links_rewired + experiment + node_swap, data = dat)
+summary(reg)
 p.clustered_fear_increasing
 ```
 ## Fear Extinction
@@ -330,22 +187,50 @@ p.clustered_fear_increasing
 dat = fread('../data/sensitivity/experiment-06-fear-decreasing-small-world-vary-clustering-and-swapping-sensitivity-table.csv',skip=6) %>%
   prep_data() %>%
   filter(step == max(step)) %>%
+  mutate(node_swap = percent_nodes_swapped) %>%
   mutate(percent_nodes_swapped = paste0("Node Swapping: ",round(100*percent_nodes_swapped,0),PERCENT_SIGN)) %>%
   mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
-
+data_labels = NULL
+for (ns in dat[,unique(percent_nodes_swapped)]){
+  m = lm(percent_infected ~ percent_links_rewired + experiment, data = dat[percent_nodes_swapped==ns,])
+  m_summary = summary(m)
+  coefs = m_summary$coefficients[,c("Estimate","Pr(>|t|)")] %>% 
+    data.table(keep.rownames = "variable") %>% 
+    rename(pval=`Pr(>|t|)`) %>%
+    star_labeler()
+  
+  eq_label = paste0("$\\beta_{rewire}$=",
+                    coefs[variable=='percent_links_rewired',label],
+                    '$\\n',
+                    "$\\beta_{SRA}$=",
+                         coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]
+                         )
+  eq1 = paste0('beta[rewire] : "',eval(coefs[variable=='percent_links_rewired',label]),'"')
+  eq2 = paste0('beta[SRA] : "',eval(coefs[variable=='experimentFear Spread via:\nSocial Risk Appraisal',label]),'"')
+  
+  data_labels = bind_rows(data_labels,tibble(percent_nodes_swapped=ns,label1=eq1,label2=eq2,experiment="The"))
+}
+data_labels <- data_labels %>% mutate(percent_nodes_swapped = factor(percent_nodes_swapped,levels = lvls))
 p.clustered_fear_decreasing = dat %>%
   ggplot() +
   aes(x=percent_links_rewired,y=percent_infected,col=experiment) +
   geom_point(alpha=0.1,size=0.01) +
   stat_summary(geom = "line", fun = mean) +
   stat_summary(geom="point",fun = mean,size=0.75) +
+  geom_text(data = data_labels,mapping = aes(label=label1),
+            parse = T,
+            x=0.165,y=70,alpha=1.0,color='black') +
+  geom_text(data = data_labels,mapping = aes(label=label2),
+            parse = T,
+            x=0.1925,y=70,alpha=1.0,color='black') +
   scale_color_manual(values=color_map,name=NULL) +
   plot_theme(base_size = 14) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
   labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections")
-
+reg <- lm(percent_infected ~ percent_links_rewired + experiment + node_swap, data = dat)
+summary(reg)
 p.clustered_fear_decreasing
 ```
 
@@ -391,7 +276,7 @@ dat = rbindlist(l = list(d1,d2),fill = T) %>%
 
 
 
-dat %>% epi_plot(one_disease_rate = F,base_size = 15,txt_size = 8) +
+dat %>% epi_plot(one_disease_rate = F,base_size = 15,txt_size = 6) +
   facet_grid(Disease_Infection_Rate ~ experiment + Release_Mechanism)
 ggsave('../figures/sensitivity/Supp/Supplement-Compare-Release-Mechanisms.pdf', height = 8, width = 11.5, device = cairo_pdf)
 
