@@ -164,16 +164,16 @@ p.clustered_fear_increasing = dat %>%
   scale_color_manual(values=color_map,name=NULL) +
   geom_text(data = data_labels,mapping = aes(label=label1),
             parse = T,
-            x=0.165,y=20,alpha=1.0,color='black') +
+            x=0.165,y=20,alpha=1.0,color='black',family="Times New Roman") +
   geom_text(data = data_labels,mapping = aes(label=label2),
             parse = T,
-            x=0.1925,y=20,alpha=1.0,color='black') +
+            x=0.1925,y=20,alpha=1.0,color='black',family="Times New Roman") +
   plot_theme(base_size = 14) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
   labs(x="Percent Links Rewired (Decreasing Clustering)",
-       y="Cumulative Infections")
+       y="Cumulative Infections\n")
 
 
 # also do linear regression using node swapping as a factor:
@@ -219,16 +219,16 @@ p.clustered_fear_decreasing = dat %>%
   stat_summary(geom="point",fun = mean,size=0.75) +
   geom_text(data = data_labels,mapping = aes(label=label1),
             parse = T,
-            x=0.165,y=70,alpha=1.0,color='black') +
+            x=0.165,y=70,alpha=1.0,color='black',family="Times New Roman") +
   geom_text(data = data_labels,mapping = aes(label=label2),
             parse = T,
-            x=0.1925,y=70,alpha=1.0,color='black') +
+            x=0.1925,y=70,alpha=1.0,color='black',family="Times New Roman") +
   scale_color_manual(values=color_map,name=NULL) +
   plot_theme(base_size = 14) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
-  labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections")
+  labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections\n")
 reg <- lm(percent_infected ~ percent_links_rewired + experiment + node_swap, data = dat)
 summary(reg)
 p.clustered_fear_decreasing
@@ -246,7 +246,8 @@ cowplot::plot_grid(
     labs(title="Socially-Driven Fear Extinction") + 
     theme(plot.title = element_text(hjust = 0.5,size=16)) + 
     scale_y_continuous(limits = c(0,80), labels = function(x) paste0(x,"%"),breaks = seq(0,80,by=20)),
-  labels = c("a","b")
+  labels = c("(a)","(b)"),
+  label_fontface = "italic",label_fontfamily = "Times"
 )
 ggsave('../figures/sensitivity/SRA-Results-Robust-to-Clustering.pdf', height = 8, width = 11.5, device = cairo_pdf)
 ```
@@ -276,7 +277,7 @@ dat = rbindlist(l = list(d1,d2),fill = T) %>%
 
 
 
-dat %>% epi_plot(one_disease_rate = F,base_size = 15,txt_size = 6) +
+dat %>% epi_plot(one_disease_rate = F,base_size = 15,txt_size = 8) +
   facet_grid(Disease_Infection_Rate ~ experiment + Release_Mechanism)
 ggsave('../figures/sensitivity/Supp/Supplement-Compare-Release-Mechanisms.pdf', height = 8, width = 11.5, device = cairo_pdf)
 
