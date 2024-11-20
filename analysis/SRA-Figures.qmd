@@ -18,12 +18,16 @@ colorlinks: true
 ## Introduction
 
 ```{r setup, include=FALSE}
-dev = 'cairo_pdf'
 PERCENT_SIGN = '%'
-knitr::opts_chunk$set(echo = F, warning = F, message = F, dev = dev, cache = T, cache.lazy = F)
+#knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = T, cache.lazy = F)
 library(data.table)
 library(tidyverse)
 library(stringr)
+library(cowplot)
+library(igraph)
+library(RColorBrewer)
+library(stringr)
+s = proc.time()[3]
 ```
 
 ```{r utility_functions}
@@ -35,8 +39,10 @@ color_map = c(
   "Complex Contagion"     = "#E18727FF"
 )
 names(color_map) = paste0("Fear Spread via:\n",names(color_map))
+
+
 plot_theme = function(base_size=10){
-  theme_classic(base_size = base_size) +
+  theme_classic(base_size = base_size,base_family = "Times New Roman") +
   theme(axis.text.y.right = element_blank(),
         axis.line.y.right = element_blank(),
         axis.ticks.y.right = element_blank(),
@@ -221,10 +227,10 @@ label_arrows = merge.data.table(label_peak_infect, label_epidemic_ends, by = "ru
                mutate(label = paste0(peak_infections,'\n',epi_end_label))
 
 p = dat  |> 
-  mutate(rn_alpha = if_else(run_number %in% cumulative_rns,1.0,0.1)) %>%
+  mutate(alpha = if_else(run_number %in% cumulative_rns,1.0,0.1)) %>%
   ggplot() +
   # plot
-  aes(x=step,y=count_disease_I,color=experiment,group=run_number,alpha=rn_alpha) +
+  aes(x=step,y=count_disease_I,color=experiment,group=run_number,alpha=alpha) +
   stat_summary(geom = "line",aes(group=-1),fun=mean,linetype="dashed",show.legend = F) +
   geom_line(show.legend = F) + # individual runs
   facet_grid(Disease_Infection_Rate~experiment) +
@@ -245,8 +251,8 @@ lbl_peak_infected_text = 0.56
 lbl_epi_end_arrow = 0.40
 lbl_epi_end_text = 0.46
 p = p + geom_text(data = labels,
-            mapping = aes(label=CI,alpha=1.0),x=100,y=lbl_CI*y.lim,
-            group=-1,color='black',size=txt_size/.pt,show.legend = F) +
+            mapping = aes(label=CI),x=100,y=lbl_CI*y.lim,alpha=1.0,
+            group=-1,color='black',size=txt_size/.pt,show.legend = F,family="Times New Roman") +
   # arrow and label for peak infected
   geom_segment(
     data = label_peak_infect,
@@ -255,14 +261,14 @@ p = p + geom_text(data = labels,
     x = 120, y = (lbl_peak_infected_arrow*y.lim),
     lineend = "round", # See available arrow types in example above
     linejoin = "round",
-    size = 1, 
-    arrow = arrow(length = unit(0.1, "inches"),type = "closed"),
+    size = 0.5, 
+    arrow = arrow(length = unit(0.1, "inches"),angle=20,type = "closed"),
     colour = "black" # Also accepts "red", "blue' etc
   ) +
   geom_label(data = label_peak_infect,
             mapping = aes(label=peak_infections,alpha=1.0),x=115,y=lbl_peak_infected_text*y.lim,
             label.size = NA,
-            group=-1,color='black',size=txt_size/.pt,show.legend = F) +
+            group=-1,color='black',size=txt_size/.pt,show.legend = F,family="Times New Roman") +
   
   # arrow and label for epidemic end
   geom_segment(
@@ -272,14 +278,14 @@ p = p + geom_text(data = labels,
     x = 120, y = (lbl_epi_end_arrow*y.lim),
     lineend = "round", # See available arrow types in example above
     linejoin = "round",
-    size = 1, 
-    arrow = arrow(length = unit(0.1, "inches"),type = "closed"),
+    size = 0.5, 
+    arrow = arrow(length = unit(0.1, "inches"),angle=20,type = "closed"),
     colour = "black" # Also accepts "red", "blue' etc
   ) +
   geom_label(data = label_epidemic_ends,
             mapping = aes(label=epi_end_label,alpha=1.0),x=115,y=lbl_epi_end_text*y.lim,
             label.size = NA,
-            group=-1,color='black',size=txt_size/.pt,show.legend = F)
+            group=-1,color='black',size=txt_size/.pt,show.legend = F,family="Times New Roman")
 
 if(one_disease_rate==F){
   p = p + 
@@ -313,7 +319,7 @@ p.spatial = dat.spatial %>%
   labs(title="Spatially Clustered") + 
   theme(plot.title = element_text(hjust = 0.5,size = 18))
 p.spatial
-ggsave('../figures/core/Supp/Socially-Driven-Fear-Amplification-Spatially-Clustered.pdf',height = 8, width = 11.5, device = cairo_pdf)
+ggsave('../figures/core/Supp/Socially-Driven-Fear-Amplification-Spatially-Clustered.pdf', height = 8, width = 11.5, device = cairo_pdf)
 ```
 
 
@@ -331,7 +337,7 @@ dat.small_world = rbindlist(
 
 
 dat.small_world %>%
-  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 6) + 
+  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 9) + 
   labs(title="Small World") + 
   theme(plot.title = element_text(hjust = 0.5,size = 18))
 ggsave('../figures/core/Supp/Socially-Driven-Fear-Amplification-Small-World.pdf',height = 8, width = 11.5, device = cairo_pdf)
@@ -340,19 +346,20 @@ ggsave('../figures/core/Supp/Socially-Driven-Fear-Amplification-Small-World.pdf'
 ## Combined
 ```{r}
 p.spatial = dat.spatial %>% 
-  epi_plot(base_size = 18, one_disease_rate = T,txt_size = 8) + 
+  epi_plot(base_size = 8, one_disease_rate = T,txt_size = 4) + 
   labs(title="Spatially Clustered") + 
-  theme(plot.title = element_text(hjust = 0.5,size = 16))
+  theme(plot.title = element_text(hjust = 0.5,size = 10))
 p.small_world = dat.small_world %>% 
-  epi_plot(base_size = 18, one_disease_rate = T,txt_size = 8) + 
+  epi_plot(base_size = 8, one_disease_rate = T,txt_size = 4) + 
   labs(title="Small World") + 
-  theme(plot.title = element_text(hjust = 0.5,size = 16))
+  theme(plot.title = element_text(hjust = 0.5,size = 10))
 
-cowplot::plot_grid(p.spatial,
+plot_grid(p.spatial,
                    p.small_world,
-                   nrow=2,labels = c("a","b"))
-
-ggsave('../figures/core/Socially-Driven-Fear-Amplification.pdf', height = 8, width = 11.5, device = cairo_pdf)
+                   nrow=2,labels = c("(a)","(b)"),
+          label_fontface = "italic",label_fontfamily = "Times")
+ggsave('../figures/core/Socially-Driven-Fear-Amplification.pdf', height = 4, width = 6, device = cairo_pdf)
+ggsave('../figures/core/Figure-01.png', height = 4, width = 6, device = 'png',dpi=1200,bg='white')
 ```
 
 # Socially Driven Fear Extinction
@@ -370,7 +377,7 @@ dat.spatial = rbindlist(
   )
 )
 p.spatial = dat.spatial %>% 
-  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 7) + 
+  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 9) + 
   labs(title="Spatially Clustered") + 
   theme(plot.title = element_text(hjust = 0.5,size = 18))
 
@@ -393,7 +400,7 @@ dat.small_world = rbindlist(
 
 
 p.small_world = dat.small_world %>% 
-  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 7) + 
+  epi_plot(one_disease_rate = F,base_size = 15,txt_size = 9) + 
   labs(title="Small World") + 
   theme(plot.title = element_text(hjust = 0.5,size = 18))
 p.small_world
@@ -403,20 +410,23 @@ ggsave('../figures/core/Supp/Socially-Driven-Fear-Extinction-Small-World.pdf', h
 ## Combined
 ```{r}
 p.spatial = dat.spatial %>% 
-  epi_plot(base_size = 18, one_disease_rate = T,txt_size = 8) + 
+  epi_plot(base_size = 8, one_disease_rate = T,txt_size = 4) + 
   labs(title="Spatially Clustered") + 
-  theme(plot.title = element_text(hjust = 0.5,size = 16))
+  theme(plot.title = element_text(hjust = 0.5,size = 10))
 p.small_world = dat.small_world %>% 
-  epi_plot(base_size = 18, one_disease_rate = T,txt_size = 8) + 
+  epi_plot(base_size = 8, one_disease_rate = T,txt_size = 4) + 
   labs(title="Small World") + 
-  theme(plot.title = element_text(hjust = 0.5,size = 16))
+  theme(plot.title = element_text(hjust = 0.5,size = 10))
 
-cowplot::plot_grid(p.spatial,
+plot_grid(p.spatial,
                    p.small_world,
-                   nrow=2,labels = c("a","b"))
+                   nrow=2,
+          labels = c("(a)","(b)"),
+          label_fontface = "italic",label_fontfamily = "Times")
 
+ggsave('../figures/core/Socially-Driven-Fear-Extinction.pdf',height = 4, width = 6, device = cairo_pdf)
+ggsave('../figures/core/Figure-02.png',height = 4, width = 6, device = 'png', bg = 'white',dpi=1200)
 
-ggsave('../figures/core/Socially-Driven-Fear-Extinction.pdf',height = 8, width = 11.5, device = cairo_pdf)
 ```
 
 # Clustering
@@ -467,16 +477,16 @@ p.clustered_fear_increasing = dat %>%
   scale_color_manual(values=color_map,name=NULL) +
   geom_text(data = data_labels,mapping = aes(label=label1),
             parse = T,
-            x=0.165,y=20,alpha=1.0,color='black') +
+            x=0.165,y=20,alpha=1.0,color='black',family = "Times New Roman",size=6/.pt) +
   geom_text(data = data_labels,mapping = aes(label=label2),
             parse = T,
-            x=0.1925,y=20,alpha=1.0,color='black') +
-  plot_theme(base_size = 14) +
+            x=0.1925,y=20,alpha=1.0,color='black',family = "Times New Roman",size=6/.pt) +
+  plot_theme(base_size = 8) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
   labs(x="Percent Links Rewired (Decreasing Clustering)",
-       y="Cumulative Infections")
+       y="Cumulative Infections\n")
 
 
 # also do linear regression using node swapping as a factor:
@@ -523,16 +533,16 @@ p.clustered_fear_decreasing = dat %>%
   stat_summary(geom="point",fun = mean,size=0.75) +
   geom_text(data = data_labels,mapping = aes(label=label1),
             parse = T,
-            x=0.165,y=70,alpha=1.0,color='black') +
+            x=0.165,y=70,alpha=1.0,color='black',family = "Times New Roman",size=6/.pt) +
   geom_text(data = data_labels,mapping = aes(label=label2),
             parse = T,
-            x=0.1925,y=70,alpha=1.0,color='black') +
+            x=0.1925,y=70,alpha=1.0,color='black', family = "Times New Roman",size=6/.pt) +
   scale_color_manual(values=color_map,name=NULL) +
-  plot_theme(base_size = 14) +
+  plot_theme(base_size = 8) +
   facet_wrap(~percent_nodes_swapped,ncol=1) +
   scale_x_continuous(labels = scales::percent) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
-  labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections")
+  labs(x="Percent Links Rewired (Decreasing Clustering)",y="Cumulative Infections\n")
 reg <- lm(percent_infected ~ percent_links_rewired + experiment + node_swap, data = dat)
 summary(reg)
 p.clustered_fear_decreasing
@@ -541,18 +551,20 @@ p.clustered_fear_decreasing
 ## Combined
 
 ```{r}
-cowplot::plot_grid(
+plot_grid(
   p.clustered_fear_increasing + 
     labs(title="Socially-Driven Fear Amplification") + 
-    theme(plot.title = element_text(hjust = 0.5,size=16)) + 
+    theme(plot.title = element_text(hjust = 0.5,size=8)) +
     scale_y_continuous(limits = c(0,80), labels = function(x) paste0(x,"%"),breaks = seq(0,80,by=20)),
   p.clustered_fear_decreasing + 
     labs(title="Socially-Driven Fear Extinction") + 
-    theme(plot.title = element_text(hjust = 0.5,size=16)) + 
+    theme(plot.title = element_text(hjust = 0.5,size=8)) + 
     scale_y_continuous(limits = c(0,80), labels = function(x) paste0(x,"%"),breaks = seq(0,80,by=20)),
-  labels = c("a","b")
+  labels = c("(a)","(b)"),
+          label_fontface = "italic",label_fontfamily = "Times"
 )
-ggsave('../figures/core/SRA-Results-Robust-to-Clustering.pdf', height = 8, width = 11.5, device = cairo_pdf)
+ggsave('../figures/core/Figure-05.png', height = 4, width = 6, device = 'png', bg='white',dpi=1200)
+ggsave('../figures/core/SRA-Results-Robust-to-Clustering.pdf', height = 4, width = 6, device = cairo_pdf)
 ```
 
 
@@ -562,15 +574,6 @@ ggsave('../figures/core/SRA-Results-Robust-to-Clustering.pdf', height = 8, width
 
 ## 75-Agent Example
 ```{r}
-library(data.table)
-library(tidyverse)
-library(igraph)
-library(stringr)
-library(RColorBrewer)
-library(gridExtra)
-
-
-
 brewer_set1 = brewer.pal(9,"Set1")
 
 pal = c(red = "#BC3C29FF",
@@ -748,7 +751,8 @@ data_combined_v2 = rbindlist(l = list(d1,d2,d3))  %>%
 V(net1)$compare_color = data_combined$compare_color
 V(net1)$label = data_combined_v2$fear_score_label
 
-p = ~plot(
+
+p <- ~plot(
   net1,
   vertex.size=8,
   vertex.color=data_combined$compare_color,
@@ -761,9 +765,10 @@ p = ~plot(
   vertex.label.color = 'black',
   vertex.label.cex = 0.25
 )
-cowplot::ggdraw() + cowplot::draw_plot(p)
-ggsave('../figures/core/75-Agent-Network.pdf')
-knitr::plot_crop('../figures/core/75-Agent-Network.pdf')
+
+ggdraw() + draw_plot(p)
+#ggsave('../figures/core/75-Agent-Network.pdf')
+knitr::plot_crop('../figures/core/75-Agent-Network.pdf',quiet = T)
 
 
 plot_table = data_combined[,.(`Avg Initial Fear Score` = round(mean(initial_fear_score.x),3),
@@ -787,13 +792,6 @@ plot_table %>%
 ## Sample Network
 
 ```{r}
-library(data.table)
-library(tidyverse)
-library(igraph)
-library(stringr)
-library(RColorBrewer)
-
-
 brewer_set1 = brewer.pal(9,"Set1")
 pal = c(red = brewer_set1[1],
         blue = brewer_set1[2],
@@ -832,30 +830,31 @@ coordinates = fread(net_file,skip=12,nrows=1000) %>%
     .default = color)
   )
 
-coordinates[,name:=.I-1]
+coordinates$name <- 0:(nrow(coordinates)-1)
 setcolorder(coordinates,neworder = c("name","xcor","ycor","disease_state","fear_state","color","nlogo_color","who"))
 
 net = graph.data.frame(el_file,directed=F,vertices=coordinates)
 
 co = layout.norm(as.matrix(coordinates[,c("xcor","ycor")]))
-
-
 p = ~plot(
   net,
   layout=co,
   vertex.size=3,
   vertex.color=coordinates$color,
   vertex.frame.color=NULL,
+  vertex.frame.width = 0.75,
   vertex.label.dist=0,
   edge.label.color='black',
   vertex.label=""
 )
-
-cowplot::plot_grid(
-  cowplot::ggdraw() + cowplot::draw_plot(p), cowplot::ggdraw() + cowplot::draw_image(image = '../data/core/States.png'),
+plot_grid(
+  ggdraw() + draw_plot(p), ggdraw() + draw_image(image = '../data/core/States.png'),
   nrow=1
 )
-ggsave('../figures/core/network.pdf',width = 11.5, height = 8, dev = cairo_pdf)
+ggsave('../figures/core/Figure-08.png',width = 6, height = 4,bg = 'white',dpi=1200)
+knitr::plot_crop('../figures/core/Figure-08.png',quiet = T)
+
+#ggsave('../figures/core/network.pdf',width = 11.5, height = 8)
 knitr::plot_crop('../figures/core/network.pdf',quiet = T)
 ```
 
@@ -893,13 +892,13 @@ small_world_cc %>%
   geom_line(show.legend = F) +
   facet_grid(experiment ~ name) +
   scale_color_manual(values = c("Infected"="#D95F02","Hiding"="#1B9E77"),name=NULL) +
-  plot_theme(base_size = 18) +
+  plot_theme(base_size = 8) +
   geom_label(data = small_world_cc.labels, mapping = aes(label=label),
-             label.size = NA, col='black',size=5) +
+             label.size = NA, col='black',size=6/.pt,family = "Times New Roman") +
   labs(x="Tick",y="Agent Count") 
 
-ggsave('../figures/core/Include-SRA-w-Canonical-Mechanisms.pdf',
-       height = 8, width = 11.5, device = cairo_pdf)
+ggsave('../figures/core/Figure-06.png',height = 4, width = 6, device = 'png', bg = 'white',dpi=1200)
+ggsave('../figures/core/Include-SRA-w-Canonical-Mechanisms.pdf',height = 4, width = 6,device = cairo_pdf)
 ```
 
 
@@ -928,14 +927,13 @@ dat = rbindlist(l = list(d1,d2),fill = T) %>%
 
 
 
-dat %>% epi_plot(one_disease_rate = T,base_size = 15,txt_size = 6) +
+dat %>% epi_plot(one_disease_rate = T,base_size = 8,txt_size = 4) +
   facet_grid(Disease_Infection_Rate ~ experiment + Release_Mechanism)
-ggsave('../figures/core/Probabilistic-Release-Mechanism.pdf', height = 8, width = 11.5, device = cairo_pdf)
+ggsave('../figures/core/Figure-07.png', height = 4, width = 6, device = 'png',bg='white',dpi=1200)
 
-dat %>% epi_plot(one_disease_rate = F,base_size = 15,txt_size = 6) +
+dat %>% epi_plot(one_disease_rate = F,base_size = 15,txt_size = 8) +
   facet_grid(Disease_Infection_Rate ~ experiment + Release_Mechanism)
 ggsave('../figures/core/Supp/Supplement-Compare-Release-Mechanisms.pdf', height = 8, width = 11.5, device = cairo_pdf)
-
 ```
 ## Calibrate Probability of Release Damping Coefficient
 ```{r}
@@ -961,7 +959,7 @@ data %>%
   xlim(c(0,8)) +
   plot_theme() +
   labs(x = "Average Hide Time During Simulation (100 runs)")
-ggsave(filename = '../figures/core/Supp/Calibrate-Release-Probability.pdf', height = 8, width = 11.5, device = cairo_pdf)
+ggsave(filename = '../figures/core/Supp/Calibrate-Release-Probability.pdf', height = 8, width = 11.5,device = cairo_pdf)
 ```
 
 
